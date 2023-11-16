@@ -8,59 +8,11 @@ from pettingzoo.utils import wrappers
 from pokerkit import clean_values, State
 import numpy as np
 
-
-def env(
-        deck,
-        hand_types,
-        streets,
-        betting_structure,
-        ante_trimming_status,
-        raw_antes,
-        raw_blinds_or_straddles,
-        bring_in,
-        raw_starting_stacks,
-        player_count,
-        render_mode='human',
-        illegal_reward=-1,
-):
-    """Create a poker environment with recommended wrappers.
-
-    Usually, if you want uniform antes, set ``ante_trimming_status`` to
-    ``True``.  If you want non-uniform antes like big blind antes, set
-    it to ``False``.
-
-    :param deck: The deck.
-    :param hand_types: The hand types.
-    :param streets: The streets.
-    :param betting_structure: The betting structure.
-    :param ante_trimming_status: The ante trimming stat
-    :param raw_antes: The raw antes.
-    :param raw_blinds_or_straddles: The raw blinds or straddles.
-    :param bring_in: The bring-in.
-    :param raw_starting_stacks: The raw starting stacks.
-    :param player_count: The number of players.
-    :param render_mode: The optional render mode, defaults to
-                        ``'human'``.
-    :return: The environment with recommended wrappers.
-    """
-    env = raw_env(
-        deck,
-        hand_types,
-        streets,
-        betting_structure,
-        ante_trimming_status,
-        raw_antes,
-        raw_blinds_or_straddles,
-        bring_in,
-        raw_starting_stacks,
-        player_count,
-        render_mode,
-        illegal_reward,
-    )
-    env = wrappers.AssertOutOfBoundsWrapper(env)
-    env = wrappers.OrderEnforcingWrapper(env)
-
-    return env
+CARD_COUNT = 54
+STANDING_PAT_OR_DISCARDING = 0
+FOLDING = 1
+CHECKING_OR_CALLING = 2
+COMPLETION_BETTING_OR_RAISING_TO = 3
 
 
 class PokerEnv(AECEnv):
@@ -75,47 +27,117 @@ class PokerEnv(AECEnv):
         streets,
         betting_structure,
         ante_trimming_status,
-        raw_antes,
-        raw_blinds_or_straddles,
+        antes,
+        blinds_or_straddles,
         bring_in,
-        raw_starting_stacks,
+        starting_stacks,
         player_count,
+        chip_sizes,
+        completion_betting_or_raising_to_sizes,
         render_mode=None,
         illegal_reward=-1,
     ):
         super().__init__()
 
         self.deck = deck
+        """The deck."""
         self.hand_types = hand_types
+        """The hand types."""
         self.streets = streets
+        """The streets."""
         self.betting_structure = betting_structure
+        """The betting structure."""
         self.ante_trimming_status = ante_trimming_status
-        self.antes = clean_values(raw_antes, player_count)
-        self.blinds_or_straddles = clean_values(
-            raw_blinds_or_straddles,
-            player_count,
-        )
+        """The ante trimming stat"""
+        self.antes = antes
+        """The antes."""
+        self.blinds_or_straddles = blinds_or_straddles,
+        """The blinds or straddles."""
         self.bring_in = bring_in
-        self.starting_stacks = clean_values(raw_starting_stacks, player_count)
+        """The bring-in."""
+        self.starting_stacks = starting_stacks
+        """The starting stacks."""
         self.player_count = player_count
+        """The number of players."""
+        self.chip_sizes = chip_sizes
+        """The chip sizes."""
+        self.completion_betting_or_raising_to_sizes = completion_betting_or_raising_to_sizes
+        """The completion, bet, or raise to sizes."""
         self.render_mode = render_mode
+        """The optional render mode, defaults to ``'human'``."""
         self.illegal_reward = illegal_reward
+        """The illegal reward."""
         self.raw_state = None
+        """The raw state."""
+        self.state_space = Sequence(
+            Dict(
+                {
+                    'down_cards': Tuple(
+                        MultiBinary(CARD_COUNT) for _ in self.possible_agents
+                    ),
+                    'down_card_counts': Tuple(
+                        MultiBinary(CARD_COUNT) for _ in self.possible_agents
+                    ),
+                    'up_cards': Tuple(
+                        MultiBinary(CARD_COUNT) for _ in self.possible_agents
+                    ),
+                    'board_cards': MultiBinary(CARD_COUNT),
+                    'statuses': MultiBinary(player_count),
+                    'bets': Tuple(
+                        MultiBinary(len(chip_sizes)) for _ in self.possible_agents
+                    ),
+                    'stacks': Tuple(
+                        MultiBinary(len(chip_sizes)) for _ in self.possible_agents
+                    ),
+                    'pot_contributions': Tuple(
+                        MultiBinary(len(chip_sizes)) for _ in self.possible_agents
+                    ),
+                    'stander_pat_or_discarder': MultiBinary(player_count),
+                    'actor': MultiBinary(player_count),
+                },
+            ),
+        )
+        """The state space."""
+        self._state = []
+        self.observations = {}
+        """The observations."""
         self.possible_agents = list(range(player_count))
         self.agents = []
         self.observation_spaces = {
-            agent: Dict(
-                {
-                },
+            agent: Sequence(
+                Dict(
+                    {
+                        'down_cards': MultiBinary(CARD_COUNT),
+                        'down_card_counts': Tuple(
+                            MultiBinary(CARD_COUNT) for _ in self.possible_agents
+                        ),
+                        'up_cards': Tuple(
+                            MultiBinary(CARD_COUNT) for _ in self.possible_agents
+                        ),
+                        'board_cards': MultiBinary(CARD_COUNT),
+                        'statuses': MultiBinary(player_count),
+                        'bets': Tuple(
+                            MultiBinary(len(chip_sizes)) for _ in self.possible_agents
+                        ),
+                        'stacks': Tuple(
+                            MultiBinary(len(chip_sizes)) for _ in self.possible_agents
+                        ),
+                        'pot_contributions': Tuple(
+                            MultiBinary(len(chip_sizes)) for _ in self.possible_agents
+                        ),
+                        'stander_pat_or_discarder': MultiBinary(player_count),
+                        'actor': MultiBinary(player_count),
+                    },
+                ),
             ) for agent in self.possible_agents
         }
         self.action_spaces = {
             agent: Dict(
                 {
-                    'dealing': MultiBinary(52),
-                    'betting': Discrete(
-                        self.starting_stacks[agent] + 2,
-                        start=-1,
+                    'discarded_cards': MultiBinary(CARD_COUNT),
+                    'index': Discrete(
+                        len(completion_betting_or_raising_to_sizes)
+                        + COMPLETION_BETTING_OR_RAISING_TO,
                     ),
                 },
             ) for agent in self.possible_agents
@@ -139,25 +161,40 @@ class PokerEnv(AECEnv):
         assert self.raw_state is not None
         assert self.agent_selection is not None
 
-        action_status = True
-
-        if action == -1:
-            self.raw_state.fold()
-        elif action == self.raw_state.checking_or_calling_amount:
-            self.raw_state.check_or_call()
-        elif (
-                self.raw_state.min_completion_betting_or_raising_to_amount
-                <= action
-                <= self.raw_state.max_completion_betting_or_raising_to_amount
+        if (
+                (
+                    action['index'] != STANDING_PAT_OR_DISCARDING
+                    and action['discarded_cards'].any()
+                )
+                or not (
+                    0
+                    <= action['index']
+                    < (
+                        COMPLETION_BETTING_OR_RAISING_TO
+                        + len(self.completion_betting_or_raising_to_sizes)
+                    )
+                )
         ):
-            self.raw_state.complete_bet_or_raise_to(action)
-        else:
-            action_status = False
-        
-        if not action_status:
             self.rewards[self.agent_selection] = self.illegal_reward
+            status = False
+        else:
+            try:
+                match action['index']:
+                    case STANDING_PAT_OR_DISCARDING:
+                        self.raw_state.stand_pat_or_discard()  # TODO
+                    case FOLDING:
+                        self.raw_state.fold()
+                    case CHECKING_OR_CALLING:
+                        self.raw_state.check_or_call()
+                    case index:
+                        self.raw_state.complete_bet_or_raise_to()  # TODO
+            except ValueError:
+                status = False
+            else:
+                status = True
 
-        self._update()
+        if status:
+            self._update()
 
         if self.render_mode is not None:
             self.render()
@@ -194,6 +231,31 @@ class PokerEnv(AECEnv):
     def _update(self):
         assert self.raw_state is not None
 
+        sub_state = {
+            'down_cards': Tuple(
+                MultiBinary(CARD_COUNT) for _ in self.possible_agents
+            ),
+            'down_card_counts': Tuple(
+                MultiBinary(CARD_COUNT) for _ in self.possible_agents
+            ),
+            'up_cards': Tuple(
+                MultiBinary(CARD_COUNT) for _ in self.possible_agents
+            ),
+            'board_cards': MultiBinary(CARD_COUNT),
+            'statuses': MultiBinary(player_count),
+            'bets': Tuple(
+                MultiBinary(len(chip_sizes)) for _ in self.possible_agents
+            ),
+            'stacks': Tuple(
+                MultiBinary(len(chip_sizes)) for _ in self.possible_agents
+            ),
+            'pot_contributions': Tuple(
+                MultiBinary(len(chip_sizes)) for _ in self.possible_agents
+            ),
+            'stander_pat_or_discarder': MultiBinary(player_count),
+            'actor': MultiBinary(player_count),
+        }
+
         if self.raw_state.status is False:
             for agent in self.agents:
                 self.rewards[agent] = (
@@ -213,7 +275,7 @@ class PokerEnv(AECEnv):
         self._accumulate_rewards()
 
     def observe(self, agent):
-        pass
+        return self.observations[agent]
 
     def render(self):
         if self.render_mode is None:
@@ -232,4 +294,108 @@ class PokerEnv(AECEnv):
         print(string)
 
     def state(self):
-        pass
+        return self.states
+
+
+def env(
+        deck,
+        hand_types,
+        streets,
+        betting_structure,
+        ante_trimming_status,
+        raw_antes,
+        raw_blinds_or_straddles,
+        bring_in,
+        raw_starting_stacks,
+        player_count,
+        chip_sizes,
+        completion_betting_or_raising_to_sizes,
+        render_mode='human',
+        illegal_reward=-1,
+):
+    """Create a poker environment with recommended wrappers.
+
+    Usually, if you want uniform antes, set ``ante_trimming_status`` to
+    ``True``.  If you want non-uniform antes like big blind antes, set
+    it to ``False``.
+
+    :param deck: The deck.
+    :param hand_types: The hand types.
+    :param streets: The streets.
+    :param betting_structure: The betting structure.
+    :param ante_trimming_status: The ante trimming stat
+    :param raw_antes: The raw antes.
+    :param raw_blinds_or_straddles: The raw blinds or straddles.
+    :param bring_in: The bring-in.
+    :param raw_starting_stacks: The raw starting stacks.
+    :param player_count: The number of players.
+    :param chip_sizes: The chip sizes.
+    :param completion_betting_or_raising_to_sizes: The completion,
+                                                   betting, or raising
+                                                   to sizes.
+    :param render_mode: The optional render mode, defaults to
+                        ``'human'``.
+    :param illegal_reward: The illegal reward.
+    :return: The environment with recommended wrappers.
+    """
+    env = PokerEnv(
+        deck,
+        hand_types,
+        streets,
+        betting_structure,
+        ante_trimming_status,
+        clean_values(raw_antes),
+        clean_values(raw_blinds_or_straddles),
+        bring_in,
+        clean_values(raw_starting_stacks),
+        player_count,
+        chip_sizes,
+        completion_betting_or_raising_to_sizes,
+        render_mode,
+        illegal_reward,
+    )
+    env = wrappers.OrderEnforcingWrapper(env)
+
+    return env
+
+
+def env_like(
+        state,
+        chip_sizes,
+        completion_betting_or_raising_to_sizes,
+        render_mode='human',
+        illegal_reward=-1,
+):
+    """Create a poker environment with recommended wrappers with a
+    template state.
+
+    Usually, if you want uniform antes, set ``ante_trimming_status`` to
+    ``True``.  If you want non-uniform antes like big blind antes, set
+    it to ``False``.
+
+    :param state: The template state.
+    :param chip_sizes: The chip sizes.
+    :param completion_betting_or_raising_to_sizes: The completion,
+                                                   betting, or raising
+                                                   to sizes.
+    :param render_mode: The optional render mode, defaults to
+                        ``'human'``.
+    :param illegal_reward: The illegal reward.
+    :return: The environment with recommended wrappers.
+    """
+    return env(
+        state.deck,
+        state.hand_types,
+        state.streets,
+        state.betting_structure,
+        state.ante_trimming_status,
+        state.antes,
+        state.blinds_or_straddles,
+        state.bring_in,
+        state.starting_stacks,
+        state.player_count,
+        chip_sizes,
+        completion_betting_or_raising_to_sizes,
+        render_mode,
+        illegal_reward,
+    )

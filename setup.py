@@ -56,7 +56,7 @@ setup(
         'Tracker': 'https://github.com/uoftcprg/pokerzoo/issues',
     },
     packages=find_packages(),
-    install_requires=['pettingzoo>=1.24.1<2', 'pokerkit~=0.3.0'],
+    install_requires=['gymnasium>=0.29.1<1', 'pettingzoo>=1.24.1<2', 'pokerkit~=0.3.0'],
     python_requires='>=3.11',
     package_data={'pokerzoo': ['py.typed']},
 )
